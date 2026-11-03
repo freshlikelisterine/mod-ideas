@@ -13,11 +13,16 @@ if (params.has('admin')) {
   store.set('admin', params.get('admin'));
   history.replaceState(null, '', location.pathname + location.hash);
 }
+// Old share links looked like /#i-abc123.
+const oldLink = location.hash.match(/^#i-([a-f0-9]{8})$/);
+if (oldLink) history.replaceState(null, '', '/i/' + oldLink[1]);
+
 const adminToken = store.get('admin');
 
 const state = {
-  ideas: [], categories: [], statuses: [], admin: false,
+  name: 'Mod Ideas', ideas: [], categories: [], statuses: [], admin: false,
   sort: store.get('sort') || 'hot', cat: '', q: '', shown: PAGE,
+  current: null, listScroll: 0, fromList: false,
 };
 
 async function api(method, url, body) {
@@ -32,6 +37,7 @@ async function api(method, url, body) {
 
 const esc = s => String(s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
 
 function ago(t) {
   const m = (Date.now() - t) / 60000;
@@ -59,7 +65,59 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
 }
 
-// --- rendering ---
+const findIdea = id => state.ideas.find(i => i.id === id);
+
+// --- navigation ---
+
+function go(path) {
+  if (location.pathname === path) return;
+  if (!$('#list-view').hidden) {
+    state.listScroll = scrollY;
+    state.fromList = true;
+  }
+  history.pushState(null, '', path);
+  route();
+}
+
+function route() {
+  const id = location.pathname.match(/^\/i\/([a-f0-9]{8})$/)?.[1];
+  if (id) showIdea(id);
+  else showList();
+}
+
+function showList() {
+  state.current = null;
+  $('#idea-view').hidden = true;
+  $('#list-view').hidden = false;
+  document.title = state.name;
+  render();
+  scrollTo(0, state.listScroll);
+}
+
+async function showIdea(id) {
+  $('#list-view').hidden = true;
+  $('#form').hidden = true;
+  const view = $('#idea-view');
+  view.hidden = false;
+  scrollTo(0, 0);
+
+  const cached = findIdea(id);
+  // Show the preview right away while the full idea loads.
+  state.current = cached ? { ...cached, thread: null } : null;
+  renderIdea();
+  try {
+    const idea = await api('GET', `/api/ideas/${id}`);
+    if (location.pathname !== '/i/' + id) return;
+    state.current = idea;
+    document.title = `${idea.title} · ${state.name}`;
+  } catch {
+    state.current = null;
+    state.missing = true;
+  }
+  renderIdea();
+}
+
+// --- wall ---
 
 function visible() {
   const q = state.q.toLowerCase();
@@ -69,26 +127,30 @@ function visible() {
     .sort(SORTS[state.sort]);
 }
 
-function card(i) {
-  const admin = state.admin ? `<span class="admin">
-      <select data-status>${state.statuses.map(s =>
-        `<option value="${s}"${s === i.status ? ' selected' : ''}>${s || 'status'}</option>`).join('')}</select>
-      <button data-del>delete</button></span>` : '';
-  return `<li id="i-${i.id}" class="idea${i.status ? ' s-' + i.status : ''}" data-id="${i.id}">
-    <div class="vote">
+function voteBox(i) {
+  return `<div class="vote">
       <button data-v="1" class="${i.my === 1 ? 'on' : ''}" aria-label="Upvote">+</button>
       <b>${i.score}</b>
       <button data-v="-1" class="${i.my === -1 ? 'on' : ''}" aria-label="Downvote">&minus;</button>
-    </div>
-    <div class="main">
-      <div class="meta">
+    </div>`;
+}
+
+function tags(i) {
+  return `<div class="meta">
         <button class="tag" data-cat="${esc(i.category)}">${esc(i.category)}</button>
         ${i.status ? `<span class="tag status">${esc(i.status)}</span>` : ''}
-      </div>
-      <h2>${esc(i.title)}</h2>
-      ${i.body ? `<p class="body">${esc(i.body)}</p>` : ''}
+      </div>`;
+}
+
+function card(i) {
+  return `<li class="idea${i.status ? ' s-' + i.status : ''}" data-id="${i.id}">
+    ${voteBox(i)}
+    <div class="main">
+      ${tags(i)}
+      <h2><a href="/i/${i.id}" data-nav>${esc(i.title)}</a></h2>
+      ${i.body ? `<p class="preview">${esc(i.body)}</p>` : ''}
       <div class="meta muted">
-        <span>${esc(i.author || 'anon')}</span>&middot;<span>${ago(i.created)}</span>&middot;<a href="#i-${i.id}" data-link>link</a>${admin}
+        <span>${esc(i.author || 'anon')}</span>&middot;<span>${ago(i.created)}</span>${i.comments ? `&middot;<span>${plural(i.comments, 'comment')}</span>` : ''}
       </div>
     </div>
   </li>`;
@@ -98,7 +160,7 @@ function render() {
   const list = visible();
   const total = state.ideas.length;
   $('#count').textContent = list.length === total
-    ? `${total} idea${total === 1 ? '' : 's'}`
+    ? plural(total, 'idea')
     : `${list.length} of ${total}`;
   $('#wall').innerHTML = list.length
     ? list.slice(0, state.shown).map(card).join('')
@@ -109,17 +171,67 @@ function render() {
   for (const b of document.querySelectorAll('#cats button')) b.classList.toggle('on', b.dataset.c === state.cat);
 }
 
-function rerenderCard(i) {
-  const el = document.getElementById('i-' + i.id);
-  if (!el) return;
-  const open = el.querySelector('.body.open');
-  el.outerHTML = card(i);
-  if (open) document.querySelector(`#i-${i.id} .body`).classList.add('open');
-}
-
 function setFilter(changes) {
   Object.assign(state, changes, { shown: PAGE });
   render();
+}
+
+// --- idea page ---
+
+function comment(c) {
+  const del = state.admin ? `&middot;<button class="link danger" data-del-comment="${c.id}">delete</button>` : '';
+  return `<li>
+    <div class="meta muted"><span class="who">${esc(c.author || 'anon')}</span>&middot;<span>${ago(c.created)}</span>${del}</div>
+    <p class="text">${esc(c.body)}</p>
+  </li>`;
+}
+
+function renderIdea() {
+  const view = $('#idea-view');
+  const i = state.current;
+  if (!i) {
+    view.innerHTML = `<button class="link" data-back>Back</button>
+      <p class="empty muted">${state.missing ? 'This idea does not exist.' : 'Loading'}</p>`;
+    state.missing = false;
+    return;
+  }
+  const admin = state.admin ? `<span class="admin">
+      <select data-status>${state.statuses.map(s =>
+        `<option value="${s}"${s === i.status ? ' selected' : ''}>${s || 'status'}</option>`).join('')}</select>
+      <button class="link danger" data-del>delete</button></span>` : '';
+  const thread = i.thread
+    ? (i.thread.length ? `<ol class="comments">${i.thread.map(comment).join('')}</ol>` : '')
+    : '<p class="muted">Loading</p>';
+
+  view.innerHTML = `<button class="link" data-back>Back</button>
+    <article class="idea full${i.status ? ' s-' + i.status : ''}" data-id="${i.id}">
+      ${voteBox(i)}
+      <div class="main">
+        ${tags(i)}
+        <h1>${esc(i.title)}</h1>
+        <div class="meta muted">
+          <span class="who">${esc(i.author || 'anon')}</span>&middot;<span>${ago(i.created)}</span>&middot;<button class="link" data-copy>copy link</button>${admin}
+        </div>
+        ${i.body ? `<p class="text">${esc(i.body)}</p>` : ''}
+      </div>
+    </article>
+    <h3>${plural(i.comments, 'comment')}</h3>
+    ${thread}
+    <form id="c-form">
+      <textarea maxlength="2000" rows="3" placeholder="Add a comment" required></textarea>
+      <div class="row">
+        <input class="f-author" maxlength="16" pattern="[A-Za-z0-9_]{1,16}" placeholder="Minecraft name (optional)">
+        <button class="primary">Comment</button>
+      </div>
+      <p class="err"></p>
+    </form>`;
+  view.querySelector('.f-author').value = store.get('author');
+}
+
+function updateIdea(id, data) {
+  for (const i of [findIdea(id), state.current?.id === id && state.current]) {
+    if (i) Object.assign(i, data);
+  }
 }
 
 // --- loading ---
@@ -127,76 +239,67 @@ function setFilter(changes) {
 async function load() {
   const data = await api('GET', '/api/ideas');
   Object.assign(state, {
-    ideas: data.ideas, categories: data.categories, statuses: data.statuses, admin: data.admin,
+    name: data.name, ideas: data.ideas, categories: data.categories,
+    statuses: data.statuses, admin: data.admin,
   });
-  return data;
 }
 
 async function init() {
-  let data;
   try {
-    data = await load();
-  } catch (e) {
+    await load();
+  } catch {
     $('#count').textContent = 'Could not load ideas. Refresh to try again.';
     return;
   }
-  document.title = data.name;
-  $('#name').textContent = data.name;
+  $('#name').textContent = state.name;
   $('#f-cat').insertAdjacentHTML('beforeend',
-    data.categories.map(c => `<option>${esc(c)}</option>`).join(''));
+    state.categories.map(c => `<option>${esc(c)}</option>`).join(''));
   $('#cats').innerHTML = `<button data-c="">All</button>` +
-    data.categories.map(c => `<button data-c="${esc(c)}">${esc(c)}</button>`).join('');
-  $('#f-author').value = store.get('author');
-  render();
-  jumpToHash();
-}
-
-function jumpToHash() {
-  const id = location.hash.match(/^#i-([a-f0-9]{8})$/)?.[1];
-  if (!id || !state.ideas.some(i => i.id === id)) return;
-  if (!document.getElementById('i-' + id)) setFilter({ cat: '', q: '', shown: Infinity });
-  const el = document.getElementById('i-' + id);
-  document.querySelectorAll('.hl').forEach(e => e.classList.remove('hl'));
-  el.classList.add('hl');
-  el.scrollIntoView({ block: 'center' });
+    state.categories.map(c => `<button data-c="${esc(c)}">${esc(c)}</button>`).join('');
+  $('#form .f-author').value = store.get('author');
+  route();
 }
 
 // --- events ---
 
+async function submit(form, send) {
+  const btn = form.querySelector('button.primary');
+  const err = form.querySelector('.err');
+  const author = form.querySelector('.f-author').value.trim();
+  btn.disabled = true;
+  err.textContent = '';
+  try {
+    await send(author);
+    store.set('author', author);
+  } catch (e) {
+    err.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 $('#new').onclick = () => {
+  if ($('#list-view').hidden) go('/');
   const f = $('#form');
   f.hidden = !f.hidden;
   if (!f.hidden) $('#f-cat').focus();
 };
 
-$('#form').onsubmit = async e => {
+$('#form').onsubmit = e => {
   e.preventDefault();
-  const btn = e.target.querySelector('button');
-  const author = $('#f-author').value.trim();
-  btn.disabled = true;
-  $('#f-err').textContent = '';
-  try {
+  submit(e.target, async author => {
     const idea = await api('POST', '/api/ideas', {
       category: $('#f-cat').value,
       title: $('#f-title').value,
       body: $('#f-body').value,
       author,
     });
-    store.set('author', author);
     state.ideas.push(idea);
     e.target.reset();
-    $('#f-author').value = author;
     e.target.hidden = true;
-    setFilter({ sort: 'new', cat: '', q: '' });
-    $('#q').value = '';
-    history.replaceState(null, '', '#i-' + idea.id);
-    jumpToHash();
+    go('/i/' + idea.id);
     toast('Posted');
-  } catch (err) {
-    $('#f-err').textContent = err.message;
-  } finally {
-    btn.disabled = false;
-  }
+  });
 };
 
 $('#sort').onclick = e => {
@@ -211,70 +314,108 @@ $('#cats').onclick = e => {
 $('#q').oninput = e => setFilter({ q: e.target.value.trim() });
 $('#more').onclick = () => { state.shown += PAGE; render(); };
 
-$('#wall').onclick = async e => {
+document.addEventListener('click', async e => {
   const t = e.target;
-  const li = t.closest('.idea');
-  if (!li) return;
-  const idea = state.ideas.find(i => i.id === li.dataset.id);
+  const box = t.closest('[data-id]');
+  const id = box?.dataset.id;
 
-  if (t.dataset.v) {
+  // In-page links; ctrl/middle click still opens a new tab.
+  const link = t.closest('a[data-nav]');
+  if (link) {
+    if (e.button || e.ctrlKey || e.metaKey || e.shiftKey) return;
+    e.preventDefault();
+    go(link.getAttribute('href'));
+    return;
+  }
+
+  if (t.dataset.v && id) {
+    const idea = findIdea(id) || state.current;
     const prev = { score: idea.score, my: idea.my };
     let v = Number(t.dataset.v);
     if (idea.my === v) v = 0;
-    idea.score += v - idea.my;
-    idea.my = v;
-    rerenderCard(idea);
+    updateIdea(id, { score: idea.score + v - idea.my, my: v });
+    box.querySelector('.vote').outerHTML = voteBox(idea);
     try {
-      Object.assign(idea, await api('POST', `/api/ideas/${idea.id}/vote`, { v }));
+      const res = await api('POST', `/api/ideas/${id}/vote`, { v });
+      updateIdea(id, { score: res.score, my: res.my });
     } catch (err) {
-      Object.assign(idea, prev);
+      updateIdea(id, prev);
       toast(err.message);
     }
-    rerenderCard(idea);
+    box.querySelector('.vote').outerHTML = voteBox(idea);
   } else if (t.dataset.cat !== undefined) {
-    setFilter({ cat: t.dataset.cat });
-    window.scrollTo({ top: 0 });
-  } else if (t.matches('[data-link]')) {
-    e.preventDefault();
-    const url = location.origin + location.pathname + '#i-' + idea.id;
-    history.replaceState(null, '', '#i-' + idea.id);
+    state.listScroll = 0;
+    Object.assign(state, { cat: t.dataset.cat, shown: PAGE });
+    if ($('#list-view').hidden) go('/');
+    else { render(); scrollTo(0, 0); }
+  } else if (t.matches('[data-back]')) {
+    if (state.fromList) history.back();
+    else go('/');
+  } else if (t.matches('[data-copy]')) {
     try {
-      await navigator.clipboard.writeText(url);
+      await navigator.clipboard.writeText(location.href);
       toast('Link copied');
     } catch {
-      toast(url);
+      toast(location.href);
     }
-  } else if (t.classList.contains('body')) {
-    t.classList.toggle('open');
   } else if (t.matches('[data-del]')) {
     if (!confirm('Delete this idea?')) return;
     try {
-      await api('DELETE', `/api/ideas/${idea.id}`);
-      state.ideas = state.ideas.filter(i => i !== idea);
-      render();
+      await api('DELETE', `/api/ideas/${id}`);
+      state.ideas = state.ideas.filter(i => i.id !== id);
+      go('/');
     } catch (err) {
       toast(err.message);
     }
+  } else if (t.dataset.delComment) {
+    if (!confirm('Delete this comment?')) return;
+    try {
+      await api('DELETE', `/api/comments/${t.dataset.delComment}`);
+      const c = state.current;
+      c.thread = c.thread.filter(x => x.id !== t.dataset.delComment);
+      updateIdea(c.id, { comments: c.comments - 1 });
+      renderIdea();
+    } catch (err) {
+      toast(err.message);
+    }
+  } else if (box?.matches('#wall .idea') && !t.closest('button, a, select, .vote')) {
+    // Clicking anywhere on a card opens it.
+    go('/i/' + id);
   }
-};
+});
 
-$('#wall').onchange = async e => {
+$('#idea-view').addEventListener('submit', e => {
+  e.preventDefault();
+  const c = state.current;
+  submit(e.target, async author => {
+    const body = e.target.querySelector('textarea').value;
+    const added = await api('POST', `/api/ideas/${c.id}/comments`, { body, author });
+    c.thread.push(added);
+    updateIdea(c.id, { comments: c.comments + 1 });
+    renderIdea();
+  });
+});
+
+$('#idea-view').addEventListener('change', async e => {
   if (!e.target.matches('[data-status]')) return;
-  const li = e.target.closest('.idea');
-  const idea = state.ideas.find(i => i.id === li.dataset.id);
+  const c = state.current;
   try {
-    Object.assign(idea, await api('POST', `/api/ideas/${idea.id}/status`, { status: e.target.value }));
+    const res = await api('POST', `/api/ideas/${c.id}/status`, { status: e.target.value });
+    updateIdea(c.id, { status: res.status });
   } catch (err) {
     toast(err.message);
   }
-  rerenderCard(idea);
-};
+  renderIdea();
+});
 
-window.addEventListener('hashchange', jumpToHash);
+window.addEventListener('popstate', () => {
+  state.fromList = false;
+  route();
+});
 
 // Pick up new ideas and votes when coming back to the tab.
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState !== 'visible' || !state.categories.length) return;
+  if (document.visibilityState !== 'visible' || !state.categories.length || $('#list-view').hidden) return;
   try {
     await load();
     render();

@@ -2,7 +2,13 @@
   "name": "mod-ideas",
   "main": "src/worker.js",
   "compatibility_date": "2026-10-01",
-  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // Idea pages like /i/abc123 load index.html; the page reads the address.
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
   "vars": { "SITE_NAME": "Mod Ideas" },
   "d1_databases": [
     { "binding": "DB", "database_name": "mod-ideas", "database_id": "e0086e90-dcb9-49df-a528-532c07f29c48" }

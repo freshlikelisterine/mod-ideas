@@ -2,11 +2,12 @@
 
 A public wall where players post ideas for the mod and vote on them. No accounts, dark theme, runs free on Cloudflare.
 
-- Post an idea with a category, a title, optional details and an optional Minecraft name
+- Post an idea with a category, a title, a full description and an optional Minecraft name
+- Every idea has its own page (/i/<id>) with the full text and comments
 - Vote + or − (click again to undo). One vote per idea per browser
 - Sort by Hot, Top or New. Filter by category. Search
-- Share a direct link to any idea
-- Admin can mark ideas as planned / added / rejected, or delete them
+- Share the link to any idea page
+- Admin can mark ideas as planned / added / rejected, and delete ideas or comments
 
 ## How it works
 
@@ -49,7 +50,7 @@ Set a secret token once:
 npx wrangler secret put ADMIN_TOKEN
 ```
 
-Then open `https://your-site/?admin=YOUR_TOKEN` once. The browser remembers it and shows a status menu and a delete button on every idea.
+Then open `https://your-site/?admin=YOUR_TOKEN` once. The browser remembers it and shows a status menu and delete buttons on idea pages.
 
 ## Backup
 
@@ -59,7 +60,7 @@ npx wrangler d1 export mod-ideas --remote --output backup.sql
 
 ## Limits
 
-- 5 new ideas per 10 minutes per IP, 120 votes per minute per IP
-- Titles up to 80 characters, details up to 1000
+- 5 new ideas per 10 minutes, 10 comments per 5 minutes, 120 votes per minute (per IP)
+- Titles up to 80 characters, descriptions up to 5000, comments up to 2000
 - Duplicate titles are rejected
 - Votes are tied to a browser cookie, so clearing cookies lets someone vote again. Fine for a community wall, not for anything with stakes

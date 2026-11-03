@@ -3,8 +3,10 @@ const CATEGORIES = [
   'Dimensions', 'Structures', 'Classes', 'Magic', 'Tech', 'Fun', 'QoL', 'Other',
 ];
 const STATUSES = ['', 'planned', 'added', 'rejected'];
-const MAX = { title: 80, body: 1000 };
-const IDEA_COLS = 'id, title, body, category, author, created, status, score';
+const MAX = { title: 80, body: 5000, comment: 2000 };
+const IDEA_COLS = 'id, title, body, category, author, created, status, score, comments';
+// The wall only needs a preview of each idea.
+const LIST_COLS = IDEA_COLS.replace('body', 'substr(body, 1, 300) AS body');
 
 export default {
   async fetch(request, env, ctx) {
@@ -44,7 +46,7 @@ async function api(request, env, ctx, pathname, vid) {
 
   if (request.method === 'GET' && pathname === '/api/ideas') {
     const [ideas, mine] = await db.batch([
-      db.prepare(`SELECT ${IDEA_COLS} FROM ideas`),
+      db.prepare(`SELECT ${LIST_COLS} FROM ideas`),
       db.prepare('SELECT idea_id, v FROM votes WHERE voter = ?').bind(vid),
     ]);
     const my = new Map(mine.results.map(r => [r.idea_id, r.v]));
@@ -60,19 +62,19 @@ async function api(request, env, ctx, pathname, vid) {
     }
     const b = await readJson(request);
     const title = clean(b.title, MAX.title).replace(/\s+/g, ' ');
-    const body = clean(b.body, MAX.body).replace(/\n{3,}/g, '\n\n');
+    const body = cleanText(b.body, MAX.body);
     if (title.length < 4) throw httpError(400, 'Title is too short');
     if (!CATEGORIES.includes(b.category)) throw httpError(400, 'Pick a category');
-    const author = typeof b.author === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(b.author) ? b.author : '';
 
     const idea = {
-      id: randomHex(4), title, body, category: b.category, author,
-      created: Date.now(), status: '', score: 1,
+      id: randomHex(4), title, body, category: b.category, author: playerName(b.author),
+      created: Date.now(), status: '', score: 1, comments: 0,
     };
     try {
       await db.batch([
-        db.prepare(`INSERT INTO ideas (${IDEA_COLS}, title_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .bind(idea.id, title, body, idea.category, author, idea.created, '', 1, title.toLowerCase()),
+        db.prepare(`INSERT INTO ideas (id, title, title_key, body, category, author, created, score)
+          VALUES (?, ?, ?, ?, ?, ?, ?, 1)`)
+          .bind(idea.id, title, title.toLowerCase(), body, idea.category, idea.author, idea.created),
         db.prepare('INSERT INTO votes (idea_id, voter, v) VALUES (?, ?, 1)').bind(idea.id, vid),
       ]);
     } catch (e) {
@@ -82,14 +84,24 @@ async function api(request, env, ctx, pathname, vid) {
     return [201, { ...idea, my: 1 }];
   }
 
-  const m = pathname.match(/^\/api\/ideas\/([a-f0-9]{8})(?:\/(vote|status))?$/);
+  const m = pathname.match(/^\/api\/ideas\/([a-f0-9]{8})(?:\/(vote|status|comments))?$/);
   if (m) {
     const id = m[1];
+    const select = db.prepare(`SELECT ${IDEA_COLS}, (SELECT v FROM votes WHERE idea_id = ?1 AND voter = ?2) AS my
+      FROM ideas WHERE id = ?1`).bind(id, vid);
+
+    if (request.method === 'GET' && !m[2]) {
+      const [idea, thread] = await db.batch([
+        select,
+        db.prepare('SELECT id, body, author, created FROM comments WHERE idea_id = ? ORDER BY created').bind(id),
+      ]);
+      if (!idea.results[0]) throw httpError(404, 'Idea not found');
+      return [200, { ...withMy(idea.results[0]), thread: thread.results }];
+    }
+
     if (!(await db.prepare('SELECT 1 FROM ideas WHERE id = ?').bind(id).first())) {
       throw httpError(404, 'Idea not found');
     }
-    const select = db.prepare(`SELECT ${IDEA_COLS}, (SELECT v FROM votes WHERE idea_id = ?1 AND voter = ?2) AS my
-      FROM ideas WHERE id = ?1`).bind(id, vid);
 
     if (request.method === 'POST' && m[2] === 'vote') {
       if (await limited(db, 'vote:' + ip, 120, 60_000)) throw httpError(429, 'Slow down');
@@ -103,6 +115,22 @@ async function api(request, env, ctx, pathname, vid) {
         select,
       ]);
       return [200, withMy(res[2].results[0])];
+    }
+
+    if (request.method === 'POST' && m[2] === 'comments') {
+      if (await limited(db, 'comment:' + ip, 10, 5 * 60_000)) {
+        throw httpError(429, 'Too many comments, try again in a few minutes');
+      }
+      const b = await readJson(request);
+      const body = cleanText(b.body, MAX.comment);
+      if (body.length < 2) throw httpError(400, 'Comment is empty');
+      const c = { id: randomHex(6), body, author: playerName(b.author), created: Date.now() };
+      await db.batch([
+        db.prepare('INSERT INTO comments (id, idea_id, body, author, created) VALUES (?, ?, ?, ?, ?)')
+          .bind(c.id, id, c.body, c.author, c.created),
+        db.prepare('UPDATE ideas SET comments = comments + 1 WHERE id = ?').bind(id),
+      ]);
+      return [201, c];
     }
 
     if (!admin) throw httpError(403, 'Not allowed');
@@ -120,10 +148,23 @@ async function api(request, env, ctx, pathname, vid) {
     if (request.method === 'DELETE' && !m[2]) {
       await db.batch([
         db.prepare('DELETE FROM votes WHERE idea_id = ?').bind(id),
+        db.prepare('DELETE FROM comments WHERE idea_id = ?').bind(id),
         db.prepare('DELETE FROM ideas WHERE id = ?').bind(id),
       ]);
       return [200, { ok: true }];
     }
+  }
+
+  const cm = pathname.match(/^\/api\/comments\/([a-f0-9]{12})$/);
+  if (cm && request.method === 'DELETE') {
+    if (!admin) throw httpError(403, 'Not allowed');
+    const row = await db.prepare('SELECT idea_id FROM comments WHERE id = ?').bind(cm[1]).first();
+    if (!row) throw httpError(404, 'Comment not found');
+    await db.batch([
+      db.prepare('DELETE FROM comments WHERE id = ?').bind(cm[1]),
+      db.prepare('UPDATE ideas SET comments = comments - 1 WHERE id = ?').bind(row.idea_id),
+    ]);
+    return [200, { ok: true }];
   }
 
   throw httpError(404, 'Not found');
@@ -144,7 +185,7 @@ async function readJson(request) {
     throw httpError(415, 'Expected JSON');
   }
   const text = await request.text();
-  if (text.length > 16_384) throw httpError(413, 'Too large');
+  if (text.length > 32_768) throw httpError(413, 'Too large');
   try {
     const v = JSON.parse(text);
     return v && typeof v === 'object' ? v : {};
@@ -155,7 +196,15 @@ async function readJson(request) {
 
 function clean(s, max) {
   if (typeof s !== 'string') return '';
-  return s.replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, max);
+  return s.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000B-\u001F\u007F]/g, '').trim().slice(0, max);
+}
+
+function cleanText(s, max) {
+  return clean(s, max).replace(/\n{3,}/g, '\n\n');
+}
+
+function playerName(s) {
+  return typeof s === 'string' && /^[A-Za-z0-9_]{1,16}$/.test(s) ? s : '';
 }
 
 async function limited(db, key, max, windowMs) {
