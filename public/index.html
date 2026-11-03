@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Mod Ideas</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <h1 id="name">Mod Ideas</h1>
+    <button id="new" class="primary">New idea</button>
+  </header>
+
+  <form id="form" hidden>
+    <select id="f-cat" required><option value="">Category</option></select>
+    <input id="f-title" maxlength="80" placeholder="Your idea" required autocomplete="off">
+    <textarea id="f-body" maxlength="1000" rows="4" placeholder="Details (optional)"></textarea>
+    <div class="row">
+      <input id="f-author" maxlength="16" pattern="[A-Za-z0-9_]{1,16}" placeholder="Minecraft name (optional)">
+      <button class="primary">Post</button>
+    </div>
+    <p id="f-err" class="err"></p>
+  </form>
+
+  <nav id="sort">
+    <button data-sort="hot">Hot</button>
+    <button data-sort="top">Top</button>
+    <button data-sort="new">New</button>
+    <input id="q" type="search" placeholder="Search">
+  </nav>
+  <nav id="cats"></nav>
+
+  <p id="count" class="muted"></p>
+  <ol id="wall"></ol>
+  <button id="more" hidden>More</button>
+</main>
+<div id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

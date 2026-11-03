@@ -1,0 +1,10 @@
+{
+  "name": "mod-ideas",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-10-01",
+  "assets": { "directory": "./public", "binding": "ASSETS" },
+  "vars": { "SITE_NAME": "Mod Ideas" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "mod-ideas", "database_id": "e0086e90-dcb9-49df-a528-532c07f29c48" }
+  ]
+}
